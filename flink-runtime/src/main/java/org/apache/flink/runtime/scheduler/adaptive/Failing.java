@@ -38,8 +38,15 @@ class Failing extends StateWithExecutionGraph {
             ExecutionGraphHandler executionGraphHandler,
             OperatorCoordinatorHandler operatorCoordinatorHandler,
             Logger logger,
-            Throwable failureCause) {
-        super(context, executionGraph, executionGraphHandler, operatorCoordinatorHandler, logger);
+            Throwable failureCause,
+            ClassLoader userCodeClassLoader) {
+        super(
+                context,
+                executionGraph,
+                executionGraphHandler,
+                operatorCoordinatorHandler,
+                logger,
+                userCodeClassLoader);
         this.context = context;
 
         getExecutionGraph().failJob(failureCause, System.currentTimeMillis());
@@ -67,6 +74,7 @@ class Failing extends StateWithExecutionGraph {
 
     @Override
     boolean updateTaskExecutionState(TaskExecutionStateTransition taskExecutionStateTransition) {
+        maybeArchiveExecutionFailure(taskExecutionStateTransition);
         return getExecutionGraph().updateState(taskExecutionStateTransition);
     }
 
@@ -101,6 +109,7 @@ class Failing extends StateWithExecutionGraph {
         private final ExecutionGraphHandler executionGraphHandler;
         private final OperatorCoordinatorHandler operatorCoordinatorHandler;
         private final Throwable failureCause;
+        private final ClassLoader userCodeClassLoader;
 
         public Factory(
                 Context context,
@@ -108,13 +117,15 @@ class Failing extends StateWithExecutionGraph {
                 ExecutionGraphHandler executionGraphHandler,
                 OperatorCoordinatorHandler operatorCoordinatorHandler,
                 Logger log,
-                Throwable failureCause) {
+                Throwable failureCause,
+                ClassLoader userCodeClassLoader) {
             this.context = context;
             this.log = log;
             this.executionGraph = executionGraph;
             this.executionGraphHandler = executionGraphHandler;
             this.operatorCoordinatorHandler = operatorCoordinatorHandler;
             this.failureCause = failureCause;
+            this.userCodeClassLoader = userCodeClassLoader;
         }
 
         public Class<Failing> getStateClass() {
@@ -128,7 +139,8 @@ class Failing extends StateWithExecutionGraph {
                     executionGraphHandler,
                     operatorCoordinatorHandler,
                     log,
-                    failureCause);
+                    failureCause,
+                    userCodeClassLoader);
         }
     }
 }

@@ -25,6 +25,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.MetricOptions;
 import org.apache.flink.configuration.SchedulerExecutionMode;
+import org.apache.flink.configuration.WebOptions;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.queryablestate.KvStateID;
 import org.apache.flink.runtime.JobException;
@@ -100,7 +101,11 @@ import org.apache.flink.runtime.scheduler.adaptive.allocator.VertexParallelism;
 import org.apache.flink.runtime.scheduler.adaptive.scalingpolicy.ReactiveScaleUpController;
 import org.apache.flink.runtime.scheduler.adaptive.scalingpolicy.ScaleUpController;
 import org.apache.flink.runtime.scheduler.metrics.DeploymentStateTimeMetrics;
+import org.apache.flink.runtime.scheduler.exceptionhistory.FailureHandlingResultSnapshot;
+import org.apache.flink.runtime.scheduler.exceptionhistory.RootExceptionHistoryEntry;
+import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.state.KeyGroupRange;
+import org.apache.flink.runtime.util.BoundedFIFOQueue;
 import org.apache.flink.runtime.util.ResourceCounter;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
@@ -210,6 +215,8 @@ public class AdaptiveScheduler
 
     private final DeploymentStateTimeMetrics deploymentTimeMetrics;
 
+    private final BoundedFIFOQueue<RootExceptionHistoryEntry> exceptionHistory;
+
     public AdaptiveScheduler(
             JobGraph jobGraph,
             Configuration configuration,
@@ -290,6 +297,9 @@ public class AdaptiveScheduler
                 jobStatusMetricsSettings);
 
         jobStatusListeners = Collections.unmodifiableCollection(tmpJobStatusListeners);
+        this.exceptionHistory =
+                new BoundedFIFOQueue<>(
+                        configuration.getInteger(WebOptions.MAX_EXCEPTION_HISTORY_SIZE));
     }
 
     private static void assertPreconditions(JobGraph jobGraph) throws RuntimeException {
@@ -531,8 +541,7 @@ public class AdaptiveScheduler
 
     @Override
     public ExecutionGraphInfo requestJob() {
-        // no exception history support is added for now (see FLINK-21439)
-        return new ExecutionGraphInfo(state.getJob());
+        return new ExecutionGraphInfo(state.getJob(), getExceptionHistory());
     }
 
     @Override
@@ -840,7 +849,8 @@ public class AdaptiveScheduler
                         executionGraph,
                         executionGraphHandler,
                         operatorCoordinatorHandler,
-                        LOG));
+                        LOG,
+                        userCodeClassLoader));
     }
 
     @Override
@@ -867,7 +877,8 @@ public class AdaptiveScheduler
                         executionGraphHandler,
                         operatorCoordinatorHandler,
                         LOG,
-                        backoffTime));
+                        backoffTime,
+                        userCodeClassLoader));
         numRestarts++;
     }
 
@@ -884,7 +895,8 @@ public class AdaptiveScheduler
                         executionGraphHandler,
                         operatorCoordinatorHandler,
                         LOG,
-                        failureCause));
+                        failureCause,
+                        userCodeClassLoader));
     }
 
     @Override
@@ -912,6 +924,17 @@ public class AdaptiveScheduler
     @Override
     public void goToFinished(ArchivedExecutionGraph archivedExecutionGraph) {
         transitionToState(new Finished.Factory(this, archivedExecutionGraph, LOG));
+    }
+
+    @Override
+    public void archiveFailure(FailureHandlingResultSnapshot failureHandlingResultSnapshot) {
+        exceptionHistory.add(
+                RootExceptionHistoryEntry.fromFailureHandlingResultSnapshot(
+                        failureHandlingResultSnapshot));
+    }
+
+    private Iterable<RootExceptionHistoryEntry> getExceptionHistory() {
+        return new ArrayList(exceptionHistory);
     }
 
     @Override
@@ -1092,18 +1115,23 @@ public class AdaptiveScheduler
     }
 
     @Override
-    public Executing.FailureResult howToHandleFailure(Throwable failure) {
+    public Executing.FailureResult howToHandleFailure(
+            @Nullable ExecutionVertexID failingExecutionVertexId, Throwable failure) {
         if (ExecutionFailureHandler.isUnrecoverableError(failure)) {
             return Executing.FailureResult.canNotRestart(
+                    failingExecutionVertexId,
                     new JobException("The failure is not recoverable", failure));
         }
 
         restartBackoffTimeStrategy.notifyFailure(failure);
         if (restartBackoffTimeStrategy.canRestart()) {
             return Executing.FailureResult.canRestart(
-                    failure, Duration.ofMillis(restartBackoffTimeStrategy.getBackoffTime()));
+                    failingExecutionVertexId,
+                    failure,
+                    Duration.ofMillis(restartBackoffTimeStrategy.getBackoffTime()));
         } else {
             return Executing.FailureResult.canNotRestart(
+                    failingExecutionVertexId,
                     new JobException(
                             "Recovery is suppressed by " + restartBackoffTimeStrategy, failure));
         }

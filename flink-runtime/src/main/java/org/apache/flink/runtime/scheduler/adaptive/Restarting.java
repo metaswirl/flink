@@ -47,8 +47,15 @@ class Restarting extends StateWithExecutionGraph {
             ExecutionGraphHandler executionGraphHandler,
             OperatorCoordinatorHandler operatorCoordinatorHandler,
             Logger logger,
-            Duration backoffTime) {
-        super(context, executionGraph, executionGraphHandler, operatorCoordinatorHandler, logger);
+            Duration backoffTime,
+            ClassLoader userCodeClassLoader) {
+        super(
+                context,
+                executionGraph,
+                executionGraphHandler,
+                operatorCoordinatorHandler,
+                logger,
+                userCodeClassLoader);
         this.context = context;
         this.backoffTime = backoffTime;
 
@@ -86,6 +93,7 @@ class Restarting extends StateWithExecutionGraph {
 
     @Override
     boolean updateTaskExecutionState(TaskExecutionStateTransition taskExecutionStateTransition) {
+        maybeArchiveExecutionFailure(taskExecutionStateTransition);
         return getExecutionGraph().updateState(taskExecutionStateTransition);
     }
 
@@ -137,6 +145,7 @@ class Restarting extends StateWithExecutionGraph {
         private final ExecutionGraphHandler executionGraphHandler;
         private final OperatorCoordinatorHandler operatorCoordinatorHandler;
         private final Duration backoffTime;
+        private final ClassLoader userCodeClassLoader;
 
         public Factory(
                 Context context,
@@ -144,13 +153,15 @@ class Restarting extends StateWithExecutionGraph {
                 ExecutionGraphHandler executionGraphHandler,
                 OperatorCoordinatorHandler operatorCoordinatorHandler,
                 Logger log,
-                Duration backoffTime) {
+                Duration backoffTime,
+                ClassLoader userCodeClassLoader) {
             this.context = context;
             this.log = log;
             this.executionGraph = executionGraph;
             this.executionGraphHandler = executionGraphHandler;
             this.operatorCoordinatorHandler = operatorCoordinatorHandler;
             this.backoffTime = backoffTime;
+            this.userCodeClassLoader = userCodeClassLoader;
         }
 
         public Class<Restarting> getStateClass() {
@@ -164,7 +175,8 @@ class Restarting extends StateWithExecutionGraph {
                     executionGraphHandler,
                     operatorCoordinatorHandler,
                     log,
-                    backoffTime);
+                    backoffTime,
+                    userCodeClassLoader);
         }
     }
 }

@@ -29,7 +29,6 @@ import org.apache.flink.util.Preconditions;
 import javax.annotation.Nullable;
 
 import java.util.Collections;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
@@ -59,11 +58,38 @@ public class FailureHandlingResultSnapshot {
     public static FailureHandlingResultSnapshot create(
             FailureHandlingResult failureHandlingResult,
             Function<ExecutionVertexID, Execution> latestExecutionLookup) {
+        return create(
+                failureHandlingResult.getExecutionVertexIdOfFailedTask().orElse(null),
+                failureHandlingResult.getError(),
+                failureHandlingResult.getVerticesToRestart(),
+                failureHandlingResult.getTimestamp(),
+                latestExecutionLookup);
+    }
+
+    /**
+     * Creates a {@code FailureHandlingResultSnapshot} based on passed parameters.
+     *
+     * @param failingExecutionVertexId an {@link ExecutionVertexID} the failure originates from, or
+     *     {@code None}.
+     * @param rootCause the failure reason.
+     * @param concurrentVertexIds {@link ExecutionVertexID} Task vertices concurrently failing with
+     *     the {@code failingExecutionVertexID}.
+     * @param timestamp the failure timestamp.
+     * @param latestExecutionLookup The look-up function for retrieving the latest {@link Execution}
+     *     instance for a given {@link ExecutionVertexID}.
+     * @return The {@code FailureHandlingResultSnapshot}.
+     */
+    public static FailureHandlingResultSnapshot create(
+            @Nullable ExecutionVertexID failingExecutionVertexId,
+            Throwable rootCause,
+            Set<ExecutionVertexID> concurrentVertexIds,
+            long timestamp,
+            Function<ExecutionVertexID, Execution> latestExecutionLookup) {
         final Execution rootCauseExecution =
-                failureHandlingResult
-                        .getExecutionVertexIdOfFailedTask()
-                        .map(latestExecutionLookup)
-                        .orElse(null);
+                failingExecutionVertexId != null
+                        ? latestExecutionLookup.apply(failingExecutionVertexId)
+                        : null;
+
         Preconditions.checkArgument(
                 rootCauseExecution == null || rootCauseExecution.getFailureInfo().isPresent(),
                 String.format(
@@ -71,26 +97,21 @@ public class FailureHandlingResultSnapshot {
                         // the "(null)" values should never be used due to the condition - it's just
                         // added to make the compiler happy
                         rootCauseExecution != null ? rootCauseExecution.getAttemptId() : "(null)",
-                        failureHandlingResult
-                                .getExecutionVertexIdOfFailedTask()
-                                .map(Objects::toString)
-                                .orElse("(null)")));
+                        failingExecutionVertexId != null
+                                ? failingExecutionVertexId.toString()
+                                : "(null)"));
 
-        final ExecutionVertexID rootCauseExecutionVertexId =
-                failureHandlingResult.getExecutionVertexIdOfFailedTask().orElse(null);
         final Set<Execution> concurrentlyFailedExecutions =
-                failureHandlingResult.getVerticesToRestart().stream()
-                        .filter(
-                                executionVertexId ->
-                                        !executionVertexId.equals(rootCauseExecutionVertexId))
+                concurrentVertexIds.stream()
+                        .filter(executionVertexId -> !executionVertexId.equals(rootCauseExecution))
                         .map(latestExecutionLookup)
                         .filter(execution -> execution.getFailureInfo().isPresent())
                         .collect(Collectors.toSet());
 
         return new FailureHandlingResultSnapshot(
                 rootCauseExecution,
-                ErrorInfo.handleMissingThrowable(failureHandlingResult.getError()),
-                failureHandlingResult.getTimestamp(),
+                ErrorInfo.handleMissingThrowable(rootCause),
+                timestamp,
                 concurrentlyFailedExecutions);
     }
 
