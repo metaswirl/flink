@@ -188,7 +188,7 @@ class StopWithSavepoint extends StateWithExecutionGraph {
     private void handleAnyFailure(
             @Nullable ExecutionVertexID failingExecutionVertexId, Throwable cause) {
         operationFailureCause = cause;
-        final Executing.FailureResult failureResult =
+        final FailureResult failureResult =
                 context.howToHandleFailure(failingExecutionVertexId, cause);
 
         archiveExecutionFailure(failingExecutionVertexId, cause);
@@ -222,9 +222,9 @@ class StopWithSavepoint extends StateWithExecutionGraph {
          *     ExecutionVertex} the failure is originating from. Passing {@code null} as a value
          *     indicates that the failure was issued by Flink itself.
          * @param failure failure describing the failure cause
-         * @return {@link Executing.FailureResult} which describes how to handle the failure
+         * @return {@link FailureResult} which describes how to handle the failure
          */
-        Executing.FailureResult howToHandleFailure(
+        FailureResult howToHandleFailure(
                 @Nullable ExecutionVertexID failingExecutionVertexId, Throwable failure);
 
         /**

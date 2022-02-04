@@ -176,7 +176,7 @@ public class ExecutingTest extends TestLogger {
                         assertThat(failingArguments.getExecutionGraph(), notNullValue());
                         assertThat(failingArguments.getFailureCause().getMessage(), is(failureMsg));
                     }));
-            ctx.setHowToHandleFailure(Executing.FailureResult::canNotRestart);
+            ctx.setHowToHandleFailure(FailureResult::canNotRestart);
             exec.handleGlobalFailure(new RuntimeException(failureMsg));
         }
     }
@@ -189,8 +189,7 @@ public class ExecutingTest extends TestLogger {
             ctx.setExpectRestarting(
                     (restartingArguments ->
                             assertThat(restartingArguments.getBackoffTime(), is(duration))));
-            ctx.setHowToHandleFailure(
-                    (fid, t) -> Executing.FailureResult.canRestart(fid, t, duration));
+            ctx.setHowToHandleFailure((fid, t) -> FailureResult.canRestart(fid, t, duration));
             exec.handleGlobalFailure(new RuntimeException("Recoverable error"));
         }
     }
@@ -268,7 +267,7 @@ public class ExecutingTest extends TestLogger {
                             .setExecutionGraph(returnsFailedStateExecutionGraph)
                             .build(ctx);
 
-            ctx.setHowToHandleFailure(Executing.FailureResult::canNotRestart);
+            ctx.setHowToHandleFailure(FailureResult::canNotRestart);
             ctx.setExpectFailing(assertNonNull());
 
             exec.updateTaskExecutionState(createFailingStateTransition());
@@ -286,7 +285,7 @@ public class ExecutingTest extends TestLogger {
                             .build(ctx);
             ctx.setHowToHandleFailure(
                     (failingExecCtxVtxId, throwable) ->
-                            Executing.FailureResult.canRestart(
+                            FailureResult.canRestart(
                                     failingExecCtxVtxId, throwable, Duration.ZERO));
             ctx.setExpectRestarting(assertNonNull());
 
@@ -485,8 +484,7 @@ public class ExecutingTest extends TestLogger {
         private final StateValidator<CancellingArguments> cancellingStateValidator =
                 new StateValidator<>("cancelling");
 
-        private BiFunction<ExecutionVertexID, Throwable, Executing.FailureResult>
-                howToHandleFailure;
+        private BiFunction<ExecutionVertexID, Throwable, FailureResult> howToHandleFailure;
         private Supplier<Boolean> canScaleUp = () -> false;
         private StateValidator<StopWithSavepointArguments> stopWithSavepointValidator =
                 new StateValidator<>("stopWithSavepoint");
@@ -510,7 +508,7 @@ public class ExecutingTest extends TestLogger {
         }
 
         public void setHowToHandleFailure(
-                BiFunction<ExecutionVertexID, Throwable, Executing.FailureResult> function) {
+                BiFunction<ExecutionVertexID, Throwable, FailureResult> function) {
             this.howToHandleFailure = function;
         }
 
@@ -532,7 +530,7 @@ public class ExecutingTest extends TestLogger {
         }
 
         @Override
-        public Executing.FailureResult howToHandleFailure(
+        public FailureResult howToHandleFailure(
                 @Nullable ExecutionVertexID failingExecutionVertexId, Throwable failure) {
             return howToHandleFailure.apply(failingExecutionVertexId, failure);
         }

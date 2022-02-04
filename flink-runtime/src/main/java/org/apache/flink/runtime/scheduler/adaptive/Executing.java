@@ -41,7 +41,6 @@ import org.slf4j.Logger;
 import javax.annotation.Nullable;
 
 import java.time.Duration;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
 
@@ -302,87 +301,6 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
          * @return a ScheduledFuture representing pending completion of the task
          */
         ScheduledFuture<?> runIfState(State expectedState, Runnable action, Duration delay);
-    }
-
-    /**
-     * The {@link FailureResult} describes how a failure shall be handled. Currently, there are two
-     * alternatives: Either restarting the job or failing it.
-     */
-    static final class FailureResult {
-        @Nullable private final Duration backoffTime;
-
-        /**
-         * The {@link ExecutionVertexID} refering to the {@link ExecutionVertex} the failure is
-         * originating from or {@code null} if it's a global failure.
-         */
-        @Nullable private final ExecutionVertexID failingExecutionVertexId;
-
-        private final Throwable failureCause;
-
-        private FailureResult(
-                @Nullable ExecutionVertexID failingExecutionVertexId,
-                Throwable failureCause,
-                @Nullable Duration backoffTime) {
-            this.failingExecutionVertexId = failingExecutionVertexId;
-            this.backoffTime = backoffTime;
-            this.failureCause = failureCause;
-        }
-
-        boolean canRestart() {
-            return backoffTime != null;
-        }
-
-        /**
-         * Returns an {@code Optional} with the {@link ExecutionVertexID} of the task causing this
-         * failure or an empty {@code Optional} if it's a global failure.
-         *
-         * @return The {@code ExecutionVertexID} of the causing task or an empty {@code Optional} if
-         *     it's a global failure.
-         */
-        Optional<ExecutionVertexID> getExecutionVertexIdOfFailedTask() {
-            return Optional.ofNullable(failingExecutionVertexId);
-        }
-
-        Duration getBackoffTime() {
-            Preconditions.checkState(
-                    canRestart(), "Failure result must be restartable to return a backoff time.");
-            return backoffTime;
-        }
-
-        Throwable getFailureCause() {
-            return failureCause;
-        }
-
-        /**
-         * Creates a FailureResult which allows to restart the job.
-         *
-         * @param failingExecutionVertexId the {@link ExecutionVertexID} refering to the {@link
-         *     ExecutionVertex} the failure is originating from. Passing {@code null} as a value
-         *     indicates that the failure was issued by Flink itself.
-         * @param failureCause failureCause for restarting the job
-         * @param backoffTime backoffTime to wait before restarting the job
-         * @return FailureResult which allows to restart the job
-         */
-        static FailureResult canRestart(
-                @Nullable ExecutionVertexID failingExecutionVertexId,
-                Throwable failureCause,
-                Duration backoffTime) {
-            return new FailureResult(failingExecutionVertexId, failureCause, backoffTime);
-        }
-
-        /**
-         * Creates FailureResult which does not allow to restart the job.
-         *
-         * @param failingExecutionVertexId the {@link ExecutionVertexID} refering to the {@link
-         *     ExecutionVertex} the failure is originating from. Passing {@code null} as a value
-         *     indicates that the failure was issued by Flink itself.
-         * @param failureCause failureCause describes the reason why the job cannot be restarted
-         * @return FailureResult which does not allow to restart the job
-         */
-        static FailureResult canNotRestart(
-                @Nullable ExecutionVertexID failingExecutionVertexId, Throwable failureCause) {
-            return new FailureResult(failingExecutionVertexId, failureCause, null);
-        }
     }
 
     static class Factory implements StateFactory<Executing> {

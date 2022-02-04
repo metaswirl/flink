@@ -980,7 +980,7 @@ public class AdaptiveSchedulerTest extends TestLogger {
                         .setRestartBackoffTimeStrategy(restartBackoffTimeStrategy)
                         .build();
 
-        final Executing.FailureResult failureResult =
+        final FailureResult failureResult =
                 scheduler.howToHandleFailure(null, new Exception("test"));
 
         assertThat(failureResult.canRestart(), is(true));
