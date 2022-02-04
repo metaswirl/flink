@@ -51,6 +51,9 @@ import org.apache.flink.runtime.query.UnknownKvStateLocation;
 import org.apache.flink.runtime.scheduler.ExecutionGraphHandler;
 import org.apache.flink.runtime.scheduler.KvStateHandler;
 import org.apache.flink.runtime.scheduler.OperatorCoordinatorHandler;
+import org.apache.flink.runtime.scheduler.adaptive.failure.Failure;
+import org.apache.flink.runtime.scheduler.adaptive.failure.LocalFailure;
+import org.apache.flink.runtime.scheduler.adaptive.failure.LocalFailureWithoutExecutionVertexId;
 import org.apache.flink.runtime.scheduler.exceptionhistory.FailureHandlingResultSnapshot;
 import org.apache.flink.runtime.scheduler.stopwithsavepoint.StopWithSavepointTerminationManager;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
@@ -324,34 +327,30 @@ abstract class StateWithExecutionGraph implements State {
     }
 
     void maybeArchiveExecutionFailure(TaskExecutionStateTransition taskExecutionStateTransition) {
-
         if (taskExecutionStateTransition.getExecutionState() != ExecutionState.FAILED) {
             return;
         }
         Throwable cause = taskExecutionStateTransition.getError(userCodeClassLoader);
-        archiveExecutionFailure(
-                getExecutionVertexId(taskExecutionStateTransition.getID()),
-                cause == null
-                        ? new FlinkException(
-                                "Unknown failure cause. Probably related to FLINK-21376.")
-                        : cause);
+        if (cause == null) {
+            cause = new FlinkException("Unknown failure cause. Probably related to FLINK-21376.");
+        }
+        ExecutionVertexID id = getExecutionVertexId(taskExecutionStateTransition.getID());
+        Failure failure =
+                id != null
+                        ? new LocalFailure(id, cause)
+                        : new LocalFailureWithoutExecutionVertexId(cause);
+        archiveExecutionFailure(failure);
     }
 
-    void archiveExecutionFailure(
-            @Nullable ExecutionVertexID failingExecutionVertexId, Throwable cause) {
+    void archiveExecutionFailure(Failure failure) {
         Set<ExecutionVertexID> concurrentVertexIds =
                 IterableUtils.toStream(getExecutionGraph().getSchedulingTopology().getVertices())
                         .map(SchedulingExecutionVertex::getId)
-                        .filter(
-                                v ->
-                                        failingExecutionVertexId != null
-                                                && !failingExecutionVertexId.equals(v))
+                        .filter(v -> !failure.originatesAt(v))
                         .collect(Collectors.toSet());
 
         context.archiveFailure(
-                FailureHandlingResultSnapshot.create(
-                        failingExecutionVertexId,
-                        cause,
+                failure.createFailureHandlingResultSnapshot(
                         concurrentVertexIds,
                         System.currentTimeMillis(),
                         id -> this.getExecutionVertex(id).getCurrentExecutionAttempt()));

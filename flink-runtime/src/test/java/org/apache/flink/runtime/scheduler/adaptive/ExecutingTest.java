@@ -57,6 +57,7 @@ import org.apache.flink.runtime.operators.coordination.CoordinatorStoreImpl;
 import org.apache.flink.runtime.scheduler.DefaultVertexParallelismInfo;
 import org.apache.flink.runtime.scheduler.ExecutionGraphHandler;
 import org.apache.flink.runtime.scheduler.OperatorCoordinatorHandler;
+import org.apache.flink.runtime.scheduler.adaptive.failure.Failure;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.shuffle.ShuffleMaster;
 import org.apache.flink.runtime.taskmanager.TaskExecutionState;
@@ -78,7 +79,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ScheduledFuture;
-import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -189,7 +189,7 @@ public class ExecutingTest extends TestLogger {
             ctx.setExpectRestarting(
                     (restartingArguments ->
                             assertThat(restartingArguments.getBackoffTime(), is(duration))));
-            ctx.setHowToHandleFailure((fid, t) -> FailureResult.canRestart(fid, t, duration));
+            ctx.setHowToHandleFailure((f) -> FailureResult.canRestart(f, duration));
             exec.handleGlobalFailure(new RuntimeException("Recoverable error"));
         }
     }
@@ -283,10 +283,7 @@ public class ExecutingTest extends TestLogger {
                     new ExecutingStateBuilder()
                             .setExecutionGraph(returnsFailedStateExecutionGraph)
                             .build(ctx);
-            ctx.setHowToHandleFailure(
-                    (failingExecCtxVtxId, throwable) ->
-                            FailureResult.canRestart(
-                                    failingExecCtxVtxId, throwable, Duration.ZERO));
+            ctx.setHowToHandleFailure(failure -> FailureResult.canRestart(failure, Duration.ZERO));
             ctx.setExpectRestarting(assertNonNull());
 
             exec.updateTaskExecutionState(createFailingStateTransition());
@@ -484,7 +481,7 @@ public class ExecutingTest extends TestLogger {
         private final StateValidator<CancellingArguments> cancellingStateValidator =
                 new StateValidator<>("cancelling");
 
-        private BiFunction<ExecutionVertexID, Throwable, FailureResult> howToHandleFailure;
+        private Function<Failure, FailureResult> howToHandleFailure;
         private Supplier<Boolean> canScaleUp = () -> false;
         private StateValidator<StopWithSavepointArguments> stopWithSavepointValidator =
                 new StateValidator<>("stopWithSavepoint");
@@ -507,8 +504,7 @@ public class ExecutingTest extends TestLogger {
             stopWithSavepointValidator.expectInput(asserter);
         }
 
-        public void setHowToHandleFailure(
-                BiFunction<ExecutionVertexID, Throwable, FailureResult> function) {
+        public void setHowToHandleFailure(Function<Failure, FailureResult> function) {
             this.howToHandleFailure = function;
         }
 
@@ -530,9 +526,8 @@ public class ExecutingTest extends TestLogger {
         }
 
         @Override
-        public FailureResult howToHandleFailure(
-                @Nullable ExecutionVertexID failingExecutionVertexId, Throwable failure) {
-            return howToHandleFailure.apply(failingExecutionVertexId, failure);
+        public FailureResult howToHandleFailure(Failure failure) {
+            return howToHandleFailure.apply(failure);
         }
 
         @Override

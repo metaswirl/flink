@@ -31,6 +31,10 @@ import org.apache.flink.runtime.executiongraph.ExecutionVertex;
 import org.apache.flink.runtime.executiongraph.TaskExecutionStateTransition;
 import org.apache.flink.runtime.scheduler.ExecutionGraphHandler;
 import org.apache.flink.runtime.scheduler.OperatorCoordinatorHandler;
+import org.apache.flink.runtime.scheduler.adaptive.failure.Failure;
+import org.apache.flink.runtime.scheduler.adaptive.failure.GlobalFailure;
+import org.apache.flink.runtime.scheduler.adaptive.failure.LocalFailure;
+import org.apache.flink.runtime.scheduler.adaptive.failure.LocalFailureWithoutExecutionVertexId;
 import org.apache.flink.runtime.scheduler.stopwithsavepoint.StopWithSavepointTerminationManager;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.util.FlinkException;
@@ -86,15 +90,33 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
 
     @Override
     public void handleGlobalFailure(Throwable cause) {
-        handleAnyFailure(null, cause);
+        handleAnyFailure(new GlobalFailure(cause));
     }
 
-    private void handleAnyFailure(
-            @Nullable ExecutionVertexID failingExecutionVertexId, Throwable cause) {
-        final FailureResult failureResult =
-                context.howToHandleFailure(failingExecutionVertexId, cause);
+    @Override
+    boolean updateTaskExecutionState(TaskExecutionStateTransition taskExecutionStateTransition) {
+        final boolean successfulUpdate =
+                getExecutionGraph().updateState(taskExecutionStateTransition);
 
-        archiveExecutionFailure(failingExecutionVertexId, cause);
+        if (successfulUpdate) {
+            if (taskExecutionStateTransition.getExecutionState() == ExecutionState.FAILED) {
+                Throwable cause = extractError(taskExecutionStateTransition);
+                ExecutionVertexID id = getExecutionVertexId(taskExecutionStateTransition.getID());
+                Failure failure =
+                        id != null
+                                ? new LocalFailure(id, cause)
+                                : new LocalFailureWithoutExecutionVertexId(cause);
+                handleAnyFailure(failure);
+            }
+        }
+
+        return successfulUpdate;
+    }
+
+    private void handleAnyFailure(Failure failure) {
+        final FailureResult failureResult = context.howToHandleFailure(failure);
+
+        archiveExecutionFailure(failure);
 
         if (failureResult.canRestart()) {
             getLogger().info("Restarting job.", failureResult.getFailureCause());
@@ -113,24 +135,12 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
         }
     }
 
-    @Override
-    boolean updateTaskExecutionState(TaskExecutionStateTransition taskExecutionStateTransition) {
-        final boolean successfulUpdate =
-                getExecutionGraph().updateState(taskExecutionStateTransition);
-
-        if (successfulUpdate) {
-            if (taskExecutionStateTransition.getExecutionState() == ExecutionState.FAILED) {
-                Throwable cause = taskExecutionStateTransition.getError(userCodeClassLoader);
-                handleAnyFailure(
-                        getExecutionVertexId(taskExecutionStateTransition.getID()),
-                        cause == null
-                                ? new FlinkException(
-                                        "Unknown failure cause. Probably related to FLINK-21376.")
-                                : cause);
-            }
+    private Throwable extractError(TaskExecutionStateTransition taskExecutionStateTransition) {
+        Throwable cause = taskExecutionStateTransition.getError(userCodeClassLoader);
+        if (cause == null) {
+            cause = new FlinkException("Unknown failure cause. Probably related to FLINK-21376.");
         }
-
-        return successfulUpdate;
+        return cause;
     }
 
     @Override
@@ -224,14 +234,10 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
         /**
          * Asks how to handle the failure.
          *
-         * @param failingExecutionVertexId the {@link ExecutionVertexID} refering to the {@link
-         *     ExecutionVertex} the failure is originating from. Passing {@code null} as a value
-         *     indicates that the failure was issued by Flink itself.
          * @param failure failure describing the failure cause
          * @return {@link FailureResult} which describes how to handle the failure
          */
-        FailureResult howToHandleFailure(
-                @Nullable ExecutionVertexID failingExecutionVertexId, Throwable failure);
+        FailureResult howToHandleFailure(Failure failure);
 
         /**
          * Asks if we can scale up the currently executing job.

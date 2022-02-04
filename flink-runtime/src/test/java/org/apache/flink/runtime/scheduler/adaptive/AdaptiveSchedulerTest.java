@@ -75,6 +75,8 @@ import org.apache.flink.runtime.scheduler.SchedulerNG;
 import org.apache.flink.runtime.scheduler.VertexParallelismInformation;
 import org.apache.flink.runtime.scheduler.VertexParallelismStore;
 import org.apache.flink.runtime.scheduler.adaptive.allocator.TestingSlotAllocator;
+import org.apache.flink.runtime.scheduler.adaptive.failure.GlobalFailure;
+import org.apache.flink.runtime.scheduler.adaptive.failure.LocalFailure;
 import org.apache.flink.runtime.scheduler.exceptionhistory.RootExceptionHistoryEntry;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.slots.ResourceRequirement;
@@ -935,7 +937,10 @@ public class AdaptiveSchedulerTest extends TestLogger {
                         .setRestartBackoffTimeStrategy(NoRestartBackoffTimeStrategy.INSTANCE)
                         .build();
 
-        assertThat(scheduler.howToHandleFailure(null, new Exception("test")).canRestart())
+        assertThat(
+                        scheduler
+                                .howToHandleFailure(new GlobalFailure(new Exception("test")))
+                                .canRestart())
                 .isFalse();
     }
 
@@ -950,8 +955,9 @@ public class AdaptiveSchedulerTest extends TestLogger {
         assertThat(
                         scheduler
                                 .howToHandleFailure(
-                                        new ExecutionVertexID(JOB_VERTEX.getID(), 0),
-                                        new Exception("test"))
+                                        new LocalFailure(
+                                                new ExecutionVertexID(JOB_VERTEX.getID(), 0),
+                                                new Exception("test")))
                                 .canRestart())
                 .isFalse();
     }
@@ -967,7 +973,7 @@ public class AdaptiveSchedulerTest extends TestLogger {
                         .build();
 
         final FailureResult failureResult =
-                scheduler.howToHandleFailure(null, new Exception("test"));
+                scheduler.howToHandleFailure(new GlobalFailure(new Exception("test")));
 
         assertThat(failureResult.canRestart()).isTrue();
         assertThat(failureResult.getBackoffTime().toMillis())
@@ -982,7 +988,9 @@ public class AdaptiveSchedulerTest extends TestLogger {
         assertThat(
                         scheduler
                                 .howToHandleFailure(
-                                        null, new SuppressRestartsException(new Exception("test")))
+                                        new GlobalFailure(
+                                                new SuppressRestartsException(
+                                                        new Exception("test"))))
                                 .canRestart())
                 .isFalse();
     }

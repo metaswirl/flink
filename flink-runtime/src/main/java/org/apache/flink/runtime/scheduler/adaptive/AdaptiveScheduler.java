@@ -98,12 +98,12 @@ import org.apache.flink.runtime.scheduler.VertexParallelismStore;
 import org.apache.flink.runtime.scheduler.adaptive.allocator.ReservedSlots;
 import org.apache.flink.runtime.scheduler.adaptive.allocator.SlotAllocator;
 import org.apache.flink.runtime.scheduler.adaptive.allocator.VertexParallelism;
+import org.apache.flink.runtime.scheduler.adaptive.failure.Failure;
 import org.apache.flink.runtime.scheduler.adaptive.scalingpolicy.ReactiveScaleUpController;
 import org.apache.flink.runtime.scheduler.adaptive.scalingpolicy.ScaleUpController;
 import org.apache.flink.runtime.scheduler.metrics.DeploymentStateTimeMetrics;
 import org.apache.flink.runtime.scheduler.exceptionhistory.FailureHandlingResultSnapshot;
 import org.apache.flink.runtime.scheduler.exceptionhistory.RootExceptionHistoryEntry;
-import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.util.BoundedFIFOQueue;
 import org.apache.flink.runtime.util.ResourceCounter;
@@ -1111,25 +1111,23 @@ public class AdaptiveScheduler
     }
 
     @Override
-    public FailureResult howToHandleFailure(
-            @Nullable ExecutionVertexID failingExecutionVertexId, Throwable failure) {
-        if (ExecutionFailureHandler.isUnrecoverableError(failure)) {
-            return FailureResult.canNotRestart(
-                    failingExecutionVertexId,
-                    new JobException("The failure is not recoverable", failure));
+    public FailureResult howToHandleFailure(Failure failure) {
+        if (ExecutionFailureHandler.isUnrecoverableError(failure.getCause())) {
+            Throwable newCause =
+                    new JobException("The failure is not recoverable", failure.getCause());
+            return FailureResult.canNotRestart(failure.replaceCause(newCause));
         }
 
-        restartBackoffTimeStrategy.notifyFailure(failure);
+        restartBackoffTimeStrategy.notifyFailure(failure.getCause());
         if (restartBackoffTimeStrategy.canRestart()) {
             return FailureResult.canRestart(
-                    failingExecutionVertexId,
-                    failure,
-                    Duration.ofMillis(restartBackoffTimeStrategy.getBackoffTime()));
+                    failure, Duration.ofMillis(restartBackoffTimeStrategy.getBackoffTime()));
         } else {
-            return FailureResult.canNotRestart(
-                    failingExecutionVertexId,
+            Throwable newCause =
                     new JobException(
-                            "Recovery is suppressed by " + restartBackoffTimeStrategy, failure));
+                            "Recovery is suppressed by " + restartBackoffTimeStrategy,
+                            failure.getCause());
+            return FailureResult.canNotRestart(failure.replaceCause(newCause));
         }
     }
 
