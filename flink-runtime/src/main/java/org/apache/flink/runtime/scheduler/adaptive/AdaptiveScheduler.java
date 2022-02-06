@@ -127,6 +127,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -272,6 +273,10 @@ public class AdaptiveScheduler
 
         this.executionGraphFactory = executionGraphFactory;
 
+        this.exceptionHistory =
+                new BoundedFIFOQueue<>(
+                        configuration.getInteger(WebOptions.MAX_EXCEPTION_HISTORY_SIZE));
+
         final JobStatusStore jobStatusStore = new JobStatusStore(initializationTimestamp);
         final Collection<JobStatusListener> tmpJobStatusListeners = new ArrayList<>();
         tmpJobStatusListeners.add(Preconditions.checkNotNull(jobStatusListener));
@@ -293,9 +298,6 @@ public class AdaptiveScheduler
                 jobStatusMetricsSettings);
 
         jobStatusListeners = Collections.unmodifiableCollection(tmpJobStatusListeners);
-        this.exceptionHistory =
-                new BoundedFIFOQueue<>(
-                        configuration.getInteger(WebOptions.MAX_EXCEPTION_HISTORY_SIZE));
     }
 
     private static void assertPreconditions(JobGraph jobGraph) throws RuntimeException {
@@ -537,7 +539,12 @@ public class AdaptiveScheduler
 
     @Override
     public ExecutionGraphInfo requestJob() {
-        return new ExecutionGraphInfo(state.getJob(), getExceptionHistory());
+        return new ExecutionGraphInfo(state.getJob(), this.exceptionHistory);
+    }
+
+    @Override
+    public void archiveFailure(RootExceptionHistoryEntry failure) {
+        exceptionHistory.add(failure);
     }
 
     @Override
@@ -854,7 +861,8 @@ public class AdaptiveScheduler
             ExecutionGraph executionGraph,
             ExecutionGraphHandler executionGraphHandler,
             OperatorCoordinatorHandler operatorCoordinatorHandler,
-            Duration backoffTime) {
+            Duration backoffTime,
+            List<Failure> failureCollection) {
 
         for (ExecutionVertex executionVertex : executionGraph.getAllExecutionVertices()) {
             final int attemptNumber =
@@ -874,7 +882,8 @@ public class AdaptiveScheduler
                         operatorCoordinatorHandler,
                         LOG,
                         backoffTime,
-                        userCodeClassLoader));
+                        userCodeClassLoader,
+                        failureCollection));
         numRestarts++;
     }
 
@@ -883,7 +892,8 @@ public class AdaptiveScheduler
             ExecutionGraph executionGraph,
             ExecutionGraphHandler executionGraphHandler,
             OperatorCoordinatorHandler operatorCoordinatorHandler,
-            Throwable failureCause) {
+            Throwable failureCause,
+            List<Failure> failureCollection) {
         transitionToState(
                 new Failing.Factory(
                         this,
@@ -892,7 +902,8 @@ public class AdaptiveScheduler
                         operatorCoordinatorHandler,
                         LOG,
                         failureCause,
-                        userCodeClassLoader));
+                        userCodeClassLoader,
+                        failureCollection));
     }
 
     @Override
@@ -920,17 +931,6 @@ public class AdaptiveScheduler
     @Override
     public void goToFinished(ArchivedExecutionGraph archivedExecutionGraph) {
         transitionToState(new Finished.Factory(this, archivedExecutionGraph, LOG));
-    }
-
-    @Override
-    public void archiveFailure(FailureHandlingResultSnapshot failureHandlingResultSnapshot) {
-        exceptionHistory.add(
-                RootExceptionHistoryEntry.fromFailureHandlingResultSnapshot(
-                        failureHandlingResultSnapshot));
-    }
-
-    private Iterable<RootExceptionHistoryEntry> getExceptionHistory() {
-        return new ArrayList<>(exceptionHistory);
     }
 
     @Override
@@ -1113,9 +1113,8 @@ public class AdaptiveScheduler
     @Override
     public FailureResult howToHandleFailure(Failure failure) {
         if (ExecutionFailureHandler.isUnrecoverableError(failure.getCause())) {
-            Throwable newCause =
-                    new JobException("The failure is not recoverable", failure.getCause());
-            return FailureResult.canNotRestart(failure.replaceCause(newCause));
+            return FailureResult.canNotRestart(
+                    failure.replaceCause(new JobException("The failure is not recoverable")));
         }
 
         restartBackoffTimeStrategy.notifyFailure(failure.getCause());
@@ -1123,11 +1122,10 @@ public class AdaptiveScheduler
             return FailureResult.canRestart(
                     failure, Duration.ofMillis(restartBackoffTimeStrategy.getBackoffTime()));
         } else {
-            Throwable newCause =
-                    new JobException(
-                            "Recovery is suppressed by " + restartBackoffTimeStrategy,
-                            failure.getCause());
-            return FailureResult.canNotRestart(failure.replaceCause(newCause));
+            return FailureResult.canNotRestart(
+                    failure.replaceCause(
+                            new JobException(
+                                    "Recovery is suppressed by " + restartBackoffTimeStrategy)));
         }
     }
 

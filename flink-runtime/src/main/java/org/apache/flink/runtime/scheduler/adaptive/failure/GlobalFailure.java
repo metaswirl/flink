@@ -18,10 +18,12 @@
 
 package org.apache.flink.runtime.scheduler.adaptive.failure;
 
-import org.apache.flink.runtime.executiongraph.Execution;
-import org.apache.flink.runtime.scheduler.exceptionhistory.FailureHandlingResultSnapshot;
+import org.apache.flink.runtime.executiongraph.ExecutionVertex;
+import org.apache.flink.runtime.scheduler.exceptionhistory.ExceptionHistoryEntry;
+import org.apache.flink.runtime.scheduler.exceptionhistory.RootExceptionHistoryEntry;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 
@@ -37,11 +39,16 @@ public class GlobalFailure extends Failure {
     }
 
     @Override
-    public FailureHandlingResultSnapshot createFailureHandlingResultSnapshot(
-            Set<ExecutionVertexID> concurrentVertexIds,
-            long timestamp,
-            Function<ExecutionVertexID, Execution> latestExecutionLookup) {
-        return FailureHandlingResultSnapshot.create(
-                getCause(), concurrentVertexIds, timestamp, latestExecutionLookup);
+    public ExceptionHistoryEntry toExceptionHistoryEntry(
+            Function<ExecutionVertexID, Optional<ExecutionVertex>> lookup) {
+        return new ExceptionHistoryEntry(getCause(), getTimestamp(), null, null);
+    }
+
+    @Override
+    public RootExceptionHistoryEntry toRootExceptionHistoryEntry(
+            Function<ExecutionVertexID, Optional<ExecutionVertex>> lookup,
+            Set<ExceptionHistoryEntry> concurrentEntries) {
+        return new RootExceptionHistoryEntry(
+                getCause(), getTimestamp(), null, null, concurrentEntries);
     }
 }

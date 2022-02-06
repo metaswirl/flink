@@ -25,11 +25,13 @@ import org.apache.flink.runtime.client.JobExecutionException;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.scheduler.ExecutionGraphHandler;
 import org.apache.flink.runtime.scheduler.OperatorCoordinatorHandler;
+import org.apache.flink.runtime.scheduler.exceptionhistory.RootExceptionHistoryEntry;
 import org.apache.flink.util.TestLogger;
 
 import org.junit.Test;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.concurrent.ScheduledFuture;
 import java.util.function.Consumer;
 
@@ -128,7 +130,8 @@ public class RestartingTest extends TestLogger {
                 operatorCoordinatorHandler,
                 log,
                 Duration.ZERO,
-                ClassLoader.getSystemClassLoader());
+                ClassLoader.getSystemClassLoader(),
+                new ArrayList<>());
     }
 
     public Restarting createRestartingState(MockRestartingContext ctx)
@@ -163,6 +166,9 @@ public class RestartingTest extends TestLogger {
                             executionGraph, executionGraphHandler, operatorCoordinatorHandler));
             hadStateTransition = true;
         }
+
+        @Override
+        public void archiveFailure(RootExceptionHistoryEntry failure) {}
 
         @Override
         public void goToWaitingForResources() {

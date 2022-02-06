@@ -75,8 +75,9 @@ import org.apache.flink.runtime.scheduler.SchedulerNG;
 import org.apache.flink.runtime.scheduler.VertexParallelismInformation;
 import org.apache.flink.runtime.scheduler.VertexParallelismStore;
 import org.apache.flink.runtime.scheduler.adaptive.allocator.TestingSlotAllocator;
+import org.apache.flink.runtime.scheduler.adaptive.failure.Failure;
 import org.apache.flink.runtime.scheduler.adaptive.failure.GlobalFailure;
-import org.apache.flink.runtime.scheduler.adaptive.failure.LocalFailure;
+import org.apache.flink.runtime.scheduler.exceptionhistory.ExceptionHistoryEntry;
 import org.apache.flink.runtime.scheduler.exceptionhistory.RootExceptionHistoryEntry;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.slots.ResourceRequirement;
@@ -101,6 +102,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -955,9 +957,9 @@ public class AdaptiveSchedulerTest extends TestLogger {
         assertThat(
                         scheduler
                                 .howToHandleFailure(
-                                        new LocalFailure(
-                                                new ExecutionVertexID(JOB_VERTEX.getID(), 0),
-                                                new Exception("test")))
+                                        Failure.createLocal(
+                                                new Exception("test"),
+                                                new ExecutionVertexID(JOB_VERTEX.getID(), 0)))
                                 .canRestart())
                 .isFalse();
     }
@@ -1070,7 +1072,7 @@ public class AdaptiveSchedulerTest extends TestLogger {
                         .setDeclarativeSlotPool(declarativeSlotPool)
                         .build();
 
-        final int numAvailableSlots = 4;
+        final int numAvailableSlots = 1;
         final SubmissionBufferingTaskManagerGateway taskManagerGateway =
                 new SubmissionBufferingTaskManagerGateway(numAvailableSlots);
 
@@ -1137,7 +1139,7 @@ public class AdaptiveSchedulerTest extends TestLogger {
                         .setDeclarativeSlotPool(declarativeSlotPool)
                         .build();
 
-        final int numAvailableSlots = 4;
+        final int numAvailableSlots = 2;
         final SubmissionBufferingTaskManagerGateway taskManagerGateway =
                 new SubmissionBufferingTaskManagerGateway(numAvailableSlots);
 
@@ -1158,9 +1160,9 @@ public class AdaptiveSchedulerTest extends TestLogger {
         Iterable<ArchivedExecutionVertex> executionVertices =
                 scheduler.requestJob().getArchivedExecutionGraph().getAllExecutionVertices();
 
-        ExecutionAttemptID attemptId =
-                executionVertices.iterator().next().getCurrentExecutionAttempt().getAttemptId();
-        final long start = System.currentTimeMillis();
+        Iterator<ArchivedExecutionVertex> iterator = executionVertices.iterator();
+        ExecutionAttemptID attemptId = iterator.next().getCurrentExecutionAttempt().getAttemptId();
+        ExecutionAttemptID attemptId2 = iterator.next().getCurrentExecutionAttempt().getAttemptId();
         final OneShotLatch latch = new OneShotLatch();
         singleThreadMainThreadExecutor.execute(
                 () -> {
@@ -1171,25 +1173,28 @@ public class AdaptiveSchedulerTest extends TestLogger {
                     scheduler.updateTaskExecutionState(
                             new TaskExecutionStateTransition(
                                     new TaskExecutionState(
-                                            attemptId, ExecutionState.FAILED, expectedException2)));
+                                            attemptId2,
+                                            ExecutionState.FAILED,
+                                            expectedException2)));
                     latch.trigger();
                 });
 
         latch.await();
 
         List<Throwable> foundExceptions = new ArrayList<>();
-        scheduler
-                .requestJob()
-                .getExceptionHistory()
-                .forEach(
-                        eh -> {
-                            foundExceptions.add(
-                                    eh.getException()
-                                            .deserializeError(ClassLoader.getSystemClassLoader()));
-                        });
+        Iterable<RootExceptionHistoryEntry> entries = scheduler.requestJob().getExceptionHistory();
+        assertThat(entries).hasSize(1);
+        RootExceptionHistoryEntry entry = entries.iterator().next();
+        assertThat(entry.getException().deserializeError(ClassLoader.getSystemClassLoader()))
+                .isEqualTo(expectedException);
+        Iterable<ExceptionHistoryEntry> concurrentExceptions = entry.getConcurrentExceptions();
+        concurrentExceptions.forEach(
+                eh -> {
+                    foundExceptions.add(
+                            eh.getException().deserializeError(ClassLoader.getSystemClassLoader()));
+                });
 
-        assertThat(foundExceptions)
-                .containsExactlyInAnyOrder(expectedException, expectedException2);
+        assertThat(foundExceptions).containsExactly(expectedException2);
     }
 
     @Test(expected = IllegalStateException.class)

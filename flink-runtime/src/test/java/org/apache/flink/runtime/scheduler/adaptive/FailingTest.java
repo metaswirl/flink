@@ -24,11 +24,13 @@ import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.executiongraph.TaskExecutionStateTransition;
 import org.apache.flink.runtime.scheduler.ExecutionGraphHandler;
 import org.apache.flink.runtime.scheduler.OperatorCoordinatorHandler;
+import org.apache.flink.runtime.scheduler.exceptionhistory.RootExceptionHistoryEntry;
 import org.apache.flink.runtime.taskmanager.TaskExecutionState;
 import org.apache.flink.util.TestLogger;
 
 import org.junit.Test;
 
+import java.util.ArrayList;
 import java.util.function.Consumer;
 
 import static org.apache.flink.runtime.scheduler.adaptive.WaitingForResourcesTest.assertNonNull;
@@ -156,7 +158,8 @@ public class FailingTest extends TestLogger {
                 operatorCoordinatorHandler,
                 log,
                 testFailureCause,
-                ClassLoader.getSystemClassLoader());
+                ClassLoader.getSystemClassLoader(),
+                new ArrayList<>());
     }
 
     private static class MockFailingContext extends MockStateWithExecutionGraphContext
@@ -168,6 +171,9 @@ public class FailingTest extends TestLogger {
         public void setExpectCanceling(Consumer<ExecutingTest.CancellingArguments> asserter) {
             cancellingStateValidator.expectInput(asserter);
         }
+
+        @Override
+        public void archiveFailure(RootExceptionHistoryEntry failure) {}
 
         @Override
         public void goToCanceling(

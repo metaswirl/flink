@@ -30,7 +30,6 @@ import org.apache.flink.runtime.checkpoint.CompletedCheckpoint;
 import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.executiongraph.ArchivedExecutionGraph;
-import org.apache.flink.runtime.executiongraph.Execution;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.executiongraph.ExecutionVertex;
@@ -52,29 +51,27 @@ import org.apache.flink.runtime.scheduler.ExecutionGraphHandler;
 import org.apache.flink.runtime.scheduler.KvStateHandler;
 import org.apache.flink.runtime.scheduler.OperatorCoordinatorHandler;
 import org.apache.flink.runtime.scheduler.adaptive.failure.Failure;
-import org.apache.flink.runtime.scheduler.adaptive.failure.LocalFailure;
-import org.apache.flink.runtime.scheduler.adaptive.failure.LocalFailureWithoutExecutionVertexId;
-import org.apache.flink.runtime.scheduler.exceptionhistory.FailureHandlingResultSnapshot;
+import org.apache.flink.runtime.scheduler.exceptionhistory.ExceptionHistoryEntry;
+import org.apache.flink.runtime.scheduler.exceptionhistory.RootExceptionHistoryEntry;
 import org.apache.flink.runtime.scheduler.stopwithsavepoint.StopWithSavepointTerminationManager;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
-import org.apache.flink.runtime.scheduler.strategy.SchedulingExecutionVertex;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.util.FlinkException;
-import org.apache.flink.util.IterableUtils;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.concurrent.FutureUtils;
 
 import org.slf4j.Logger;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
-import java.util.stream.Collectors;
+import java.util.function.Function;
 
 /**
  * Abstract state class which contains an {@link ExecutionGraph} and the required handlers to
@@ -93,7 +90,7 @@ abstract class StateWithExecutionGraph implements State {
 
     private final Logger logger;
 
-    protected final ClassLoader userCodeClassLoader;
+    private final ClassLoader userCodeClassLoader;
 
     StateWithExecutionGraph(
             Context context,
@@ -101,14 +98,14 @@ abstract class StateWithExecutionGraph implements State {
             ExecutionGraphHandler executionGraphHandler,
             OperatorCoordinatorHandler operatorCoordinatorHandler,
             Logger logger,
-            ClassLoader userCodeClassLoader) {
+            ClassLoader userClassCodeLoader) {
         this.context = context;
         this.executionGraph = executionGraph;
         this.executionGraphHandler = executionGraphHandler;
         this.operatorCoordinatorHandler = operatorCoordinatorHandler;
         this.kvStateHandler = new KvStateHandler(executionGraph);
         this.logger = logger;
-        this.userCodeClassLoader = userCodeClassLoader;
+        this.userCodeClassLoader = userClassCodeLoader;
 
         FutureUtils.assertNoException(
                 executionGraph
@@ -126,22 +123,6 @@ abstract class StateWithExecutionGraph implements State {
     @VisibleForTesting
     ExecutionGraph getExecutionGraph() {
         return executionGraph;
-    }
-
-    ExecutionVertex getExecutionVertex(final ExecutionVertexID executionVertexId) {
-        return executionGraph
-                .getAllVertices()
-                .get(executionVertexId.getJobVertexId())
-                .getTaskVertices()[executionVertexId.getSubtaskIndex()];
-    }
-
-    @Nullable
-    protected ExecutionVertexID getExecutionVertexId(ExecutionAttemptID id) {
-        Execution execution = getExecutionGraph().getRegisteredExecutions().get(id);
-        if (execution == null) {
-            return null;
-        }
-        return execution.getVertex().getID();
     }
 
     JobID getJobId() {
@@ -179,6 +160,33 @@ abstract class StateWithExecutionGraph implements State {
     @Override
     public Logger getLogger() {
         return logger;
+    }
+
+    protected Throwable extractError(TaskExecutionStateTransition taskExecutionStateTransition) {
+        Throwable cause = taskExecutionStateTransition.getError(userCodeClassLoader);
+        if (cause == null) {
+            cause = new FlinkException("Unknown failure cause. Probably related to FLINK-21376.");
+        }
+        return cause;
+    }
+
+    protected Optional<ExecutionVertexID> extractExecutionVertexID(
+            TaskExecutionStateTransition taskExecutionStateTransition) {
+        return executionGraph.getExecutionVertexId(taskExecutionStateTransition.getID());
+    }
+
+    protected static Optional<RootExceptionHistoryEntry> convertFailures(
+            Function<ExecutionVertexID, Optional<ExecutionVertex>> lookup,
+            List<Failure> failureCollection) {
+        if (failureCollection.isEmpty()) {
+            return Optional.empty();
+        }
+        Failure first = failureCollection.remove(0);
+        Set<ExceptionHistoryEntry> entries = new HashSet<>();
+        for (Failure failure : failureCollection) {
+            entries.add(failure.toExceptionHistoryEntry(lookup));
+        }
+        return Optional.of(first.toRootExceptionHistoryEntry(lookup, entries));
     }
 
     void notifyPartitionDataAvailable(ResultPartitionID partitionID) {
@@ -326,36 +334,6 @@ abstract class StateWithExecutionGraph implements State {
         }
     }
 
-    void maybeArchiveExecutionFailure(TaskExecutionStateTransition taskExecutionStateTransition) {
-        if (taskExecutionStateTransition.getExecutionState() != ExecutionState.FAILED) {
-            return;
-        }
-        Throwable cause = taskExecutionStateTransition.getError(userCodeClassLoader);
-        if (cause == null) {
-            cause = new FlinkException("Unknown failure cause. Probably related to FLINK-21376.");
-        }
-        ExecutionVertexID id = getExecutionVertexId(taskExecutionStateTransition.getID());
-        Failure failure =
-                id != null
-                        ? new LocalFailure(id, cause)
-                        : new LocalFailureWithoutExecutionVertexId(cause);
-        archiveExecutionFailure(failure);
-    }
-
-    void archiveExecutionFailure(Failure failure) {
-        Set<ExecutionVertexID> concurrentVertexIds =
-                IterableUtils.toStream(getExecutionGraph().getSchedulingTopology().getVertices())
-                        .map(SchedulingExecutionVertex::getId)
-                        .filter(v -> !failure.originatesAt(v))
-                        .collect(Collectors.toSet());
-
-        context.archiveFailure(
-                failure.createFailureHandlingResultSnapshot(
-                        concurrentVertexIds,
-                        System.currentTimeMillis(),
-                        id -> this.getExecutionVertex(id).getCurrentExecutionAttempt()));
-    }
-
     void deliverOperatorEventToCoordinator(
             ExecutionAttemptID taskExecutionId, OperatorID operatorId, OperatorEvent evt)
             throws FlinkException {
@@ -420,13 +398,5 @@ abstract class StateWithExecutionGraph implements State {
          *     Finished} state
          */
         void goToFinished(ArchivedExecutionGraph archivedExecutionGraph);
-
-        /**
-         * Archive the details of an execution failure for future retrieval and inspection.
-         *
-         * @param failureHandlingResultSnapshot The {@link FailureHandlingResultSnapshot} holding
-         *     the failure information that needs to be archived.
-         */
-        void archiveFailure(FailureHandlingResultSnapshot failureHandlingResultSnapshot);
     }
 }

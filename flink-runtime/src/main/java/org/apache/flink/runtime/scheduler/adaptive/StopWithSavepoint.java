@@ -28,10 +28,6 @@ import org.apache.flink.runtime.executiongraph.TaskExecutionStateTransition;
 import org.apache.flink.runtime.scheduler.ExecutionGraphHandler;
 import org.apache.flink.runtime.scheduler.OperatorCoordinatorHandler;
 import org.apache.flink.runtime.scheduler.adaptive.failure.Failure;
-import org.apache.flink.runtime.scheduler.adaptive.failure.GlobalFailure;
-import org.apache.flink.runtime.scheduler.adaptive.failure.LocalFailure;
-import org.apache.flink.runtime.scheduler.adaptive.failure.LocalFailureWithoutExecutionVertexId;
-import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.concurrent.FutureUtils;
@@ -41,6 +37,8 @@ import org.slf4j.Logger;
 import javax.annotation.Nullable;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
 
@@ -67,6 +65,8 @@ class StopWithSavepoint extends StateWithExecutionGraph {
 
     @Nullable private Throwable operationFailureCause;
 
+    private final List<Failure> failureCollection;
+
     StopWithSavepoint(
             Context context,
             ExecutionGraph executionGraph,
@@ -86,6 +86,7 @@ class StopWithSavepoint extends StateWithExecutionGraph {
         this.context = context;
         this.checkpointScheduling = checkpointScheduling;
         this.operationFuture = new CompletableFuture<>();
+        this.failureCollection = new ArrayList<>();
 
         FutureUtils.assertNoException(
                 savepointFuture.handle(
@@ -142,9 +143,15 @@ class StopWithSavepoint extends StateWithExecutionGraph {
         return JobStatus.RUNNING;
     }
 
+    private void handleFailure(Failure failure) {
+        failureCollection.add(failure);
+        FailureResult failureResult = context.howToHandleFailure(failure);
+        transitionOnFailure(failureResult);
+    }
+
     @Override
     public void handleGlobalFailure(Throwable cause) {
-        handleAnyFailure(new GlobalFailure(cause));
+        handleFailure(Failure.createGlobal(cause));
     }
 
     @Override
@@ -152,49 +159,35 @@ class StopWithSavepoint extends StateWithExecutionGraph {
         final boolean successfulUpdate =
                 getExecutionGraph().updateState(taskExecutionStateTransition);
 
-        if (successfulUpdate) {
-            if (taskExecutionStateTransition.getExecutionState() == ExecutionState.FAILED) {
-                Throwable cause = extractError(taskExecutionStateTransition);
-                ExecutionVertexID id = getExecutionVertexId(taskExecutionStateTransition.getID());
-                Failure failure =
-                        id != null
-                                ? new LocalFailure(id, cause)
-                                : new LocalFailureWithoutExecutionVertexId(cause);
-                handleAnyFailure(failure);
-            }
+        if (successfulUpdate
+                && taskExecutionStateTransition.getExecutionState() == ExecutionState.FAILED) {
+            handleFailure(
+                    Failure.createLocal(
+                            extractError(taskExecutionStateTransition),
+                            extractExecutionVertexID(taskExecutionStateTransition)));
         }
 
         return successfulUpdate;
     }
 
-    private void handleAnyFailure(Failure failure) {
-        final FailureResult failureResult = context.howToHandleFailure(failure);
-
-        archiveExecutionFailure(failure);
-
+    private void transitionOnFailure(FailureResult failureResult) {
         if (failureResult.canRestart()) {
             getLogger().info("Restarting job.", failureResult.getFailureCause());
             context.goToRestarting(
                     getExecutionGraph(),
                     getExecutionGraphHandler(),
                     getOperatorCoordinatorHandler(),
-                    failureResult.getBackoffTime());
+                    failureResult.getBackoffTime(),
+                    failureCollection);
         } else {
             getLogger().info("Failing job.", failureResult.getFailureCause());
             context.goToFailing(
                     getExecutionGraph(),
                     getExecutionGraphHandler(),
                     getOperatorCoordinatorHandler(),
-                    failureResult.getFailureCause());
+                    failureResult.getFailureCause(),
+                    failureCollection);
         }
-    }
-
-    private Throwable extractError(TaskExecutionStateTransition taskExecutionStateTransition) {
-        Throwable cause = taskExecutionStateTransition.getError(userCodeClassLoader);
-        if (cause == null) {
-            cause = new FlinkException("Unknown failure cause. Probably related to FLINK-21376.");
-        }
-        return cause;
     }
 
     @Override
@@ -206,10 +199,11 @@ class StopWithSavepoint extends StateWithExecutionGraph {
                 completeOperationAndGoToFinished(savepoint);
             }
         } else {
-            handleAnyFailure(
-                    new GlobalFailure(
+            Failure failure =
+                    Failure.createGlobal(
                             new FlinkException(
-                                    "Job did not reach the FINISHED state while performing stop-with-savepoint.")));
+                                    "Job did not reach the FINISHED state while performing stop-with-savepoint."));
+            handleFailure(failure);
         }
     }
 
@@ -259,7 +253,8 @@ class StopWithSavepoint extends StateWithExecutionGraph {
                 ExecutionGraph executionGraph,
                 ExecutionGraphHandler executionGraphHandler,
                 OperatorCoordinatorHandler operatorCoordinatorHandler,
-                Duration backoffTime);
+                Duration backoffTime,
+                List<Failure> failureCollection);
 
         /**
          * Transitions into the {@link Failing} state.
@@ -274,7 +269,8 @@ class StopWithSavepoint extends StateWithExecutionGraph {
                 ExecutionGraph executionGraph,
                 ExecutionGraphHandler executionGraphHandler,
                 OperatorCoordinatorHandler operatorCoordinatorHandler,
-                Throwable failureCause);
+                Throwable failureCause,
+                List<Failure> failureCollection);
 
         /**
          * Transitions into the {@link Executing} state.

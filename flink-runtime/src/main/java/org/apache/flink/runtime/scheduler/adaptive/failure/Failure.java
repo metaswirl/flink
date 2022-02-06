@@ -18,33 +18,55 @@
 
 package org.apache.flink.runtime.scheduler.adaptive.failure;
 
-import org.apache.flink.runtime.executiongraph.Execution;
-import org.apache.flink.runtime.scheduler.exceptionhistory.FailureHandlingResultSnapshot;
+import org.apache.flink.runtime.executiongraph.ExecutionVertex;
+import org.apache.flink.runtime.scheduler.exceptionhistory.ExceptionHistoryEntry;
+import org.apache.flink.runtime.scheduler.exceptionhistory.RootExceptionHistoryEntry;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 
 /** Failure object. */
 public abstract class Failure {
     private final Throwable cause;
+    private final long timestamp;
 
     public Failure(Throwable cause) {
         this.cause = cause;
+        this.timestamp = System.currentTimeMillis();
+    }
+
+    public long getTimestamp() {
+        return timestamp;
     }
 
     public Throwable getCause() {
         return cause;
     }
 
-    public boolean originatesAt(ExecutionVertexID id) {
-        return false;
-    }
-
     public abstract Failure replaceCause(Throwable cause);
 
-    public abstract FailureHandlingResultSnapshot createFailureHandlingResultSnapshot(
-            Set<ExecutionVertexID> concurrentVertexIds,
-            long timestamp,
-            Function<ExecutionVertexID, Execution> latestExecutionLookup);
+    public abstract ExceptionHistoryEntry toExceptionHistoryEntry(
+            Function<ExecutionVertexID, Optional<ExecutionVertex>> lookup);
+
+    public abstract RootExceptionHistoryEntry toRootExceptionHistoryEntry(
+            Function<ExecutionVertexID, Optional<ExecutionVertex>> lookup,
+            Set<ExceptionHistoryEntry> concurrentEntries);
+
+    public static Failure createLocal(Throwable cause) {
+        return new LocalFailureWithoutExecutionVertexID(cause);
+    }
+
+    public static Failure createLocal(Throwable cause, ExecutionVertexID evid) {
+        return new LocalFailure(cause, evid);
+    }
+
+    public static Failure createLocal(Throwable cause, Optional<ExecutionVertexID> evid) {
+        return evid.map(id -> createLocal(cause, id)).orElse(createLocal(cause));
+    }
+
+    public static Failure createGlobal(Throwable cause) {
+        return new GlobalFailure(cause);
+    }
 }

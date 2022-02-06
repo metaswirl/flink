@@ -19,18 +19,25 @@
 package org.apache.flink.runtime.scheduler.adaptive;
 
 import org.apache.flink.api.common.JobStatus;
+import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.executiongraph.ArchivedExecutionGraph;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.executiongraph.TaskExecutionStateTransition;
 import org.apache.flink.runtime.scheduler.ExecutionGraphHandler;
 import org.apache.flink.runtime.scheduler.OperatorCoordinatorHandler;
+import org.apache.flink.runtime.scheduler.adaptive.failure.Failure;
+import org.apache.flink.runtime.scheduler.exceptionhistory.RootExceptionHistoryEntry;
 import org.apache.flink.util.Preconditions;
 
 import org.slf4j.Logger;
 
+import java.util.List;
+import java.util.Optional;
+
 /** State which describes a failing job which is currently being canceled. */
 class Failing extends StateWithExecutionGraph {
     private final Context context;
+    private final List<Failure> failureCollection;
 
     Failing(
             Context context,
@@ -39,7 +46,8 @@ class Failing extends StateWithExecutionGraph {
             OperatorCoordinatorHandler operatorCoordinatorHandler,
             Logger logger,
             Throwable failureCause,
-            ClassLoader userCodeClassLoader) {
+            ClassLoader userCodeClassLoader,
+            List<Failure> failureCollection) {
         super(
                 context,
                 executionGraph,
@@ -48,6 +56,7 @@ class Failing extends StateWithExecutionGraph {
                 logger,
                 userCodeClassLoader);
         this.context = context;
+        this.failureCollection = failureCollection;
 
         getExecutionGraph().failJob(failureCause, System.currentTimeMillis());
     }
@@ -63,29 +72,47 @@ class Failing extends StateWithExecutionGraph {
                 getExecutionGraph(), getExecutionGraphHandler(), getOperatorCoordinatorHandler());
     }
 
+    private void handleFailure(Failure failure) {
+        failureCollection.add(failure);
+    }
+
     @Override
     public void handleGlobalFailure(Throwable cause) {
-        getLogger()
-                .debug(
-                        "Ignored global failure because we are already failing the job {}.",
-                        getJobId(),
-                        cause);
+        handleFailure(Failure.createGlobal(cause));
     }
 
     @Override
     boolean updateTaskExecutionState(TaskExecutionStateTransition taskExecutionStateTransition) {
-        maybeArchiveExecutionFailure(taskExecutionStateTransition);
-        return getExecutionGraph().updateState(taskExecutionStateTransition);
+        final boolean successfulUpdate =
+                getExecutionGraph().updateState(taskExecutionStateTransition);
+
+        if (successfulUpdate
+                && taskExecutionStateTransition.getExecutionState() == ExecutionState.FAILED) {
+            handleFailure(
+                    Failure.createLocal(
+                            extractError(taskExecutionStateTransition),
+                            extractExecutionVertexID(taskExecutionStateTransition)));
+        }
+        return successfulUpdate;
     }
 
     @Override
     void onGloballyTerminalState(JobStatus globallyTerminalState) {
+        Optional<RootExceptionHistoryEntry> entry =
+                convertFailures(getExecutionGraph()::getExecutionVertex, failureCollection);
+        entry.ifPresent(context::archiveFailure);
         Preconditions.checkState(globallyTerminalState == JobStatus.FAILED);
         context.goToFinished(ArchivedExecutionGraph.createFrom(getExecutionGraph()));
     }
 
     /** Context of the {@link Failing} state. */
     interface Context extends StateWithExecutionGraph.Context {
+        /**
+         * Archive collection of failures.
+         *
+         * @param failure Collection of failures
+         */
+        void archiveFailure(RootExceptionHistoryEntry failure);
 
         /**
          * Transitions into the {@link Canceling} state.
@@ -110,6 +137,7 @@ class Failing extends StateWithExecutionGraph {
         private final OperatorCoordinatorHandler operatorCoordinatorHandler;
         private final Throwable failureCause;
         private final ClassLoader userCodeClassLoader;
+        private final List<Failure> failureCollection;
 
         public Factory(
                 Context context,
@@ -118,7 +146,8 @@ class Failing extends StateWithExecutionGraph {
                 OperatorCoordinatorHandler operatorCoordinatorHandler,
                 Logger log,
                 Throwable failureCause,
-                ClassLoader userCodeClassLoader) {
+                ClassLoader userCodeClassLoader,
+                List<Failure> failureCollection) {
             this.context = context;
             this.log = log;
             this.executionGraph = executionGraph;
@@ -126,6 +155,7 @@ class Failing extends StateWithExecutionGraph {
             this.operatorCoordinatorHandler = operatorCoordinatorHandler;
             this.failureCause = failureCause;
             this.userCodeClassLoader = userCodeClassLoader;
+            this.failureCollection = failureCollection;
         }
 
         public Class<Failing> getStateClass() {
@@ -140,7 +170,8 @@ class Failing extends StateWithExecutionGraph {
                     operatorCoordinatorHandler,
                     log,
                     failureCause,
-                    userCodeClassLoader);
+                    userCodeClassLoader,
+                    failureCollection);
         }
     }
 }

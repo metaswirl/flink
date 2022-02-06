@@ -19,10 +19,13 @@
 package org.apache.flink.runtime.scheduler.adaptive;
 
 import org.apache.flink.api.common.JobStatus;
+import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.executiongraph.TaskExecutionStateTransition;
 import org.apache.flink.runtime.scheduler.ExecutionGraphHandler;
 import org.apache.flink.runtime.scheduler.OperatorCoordinatorHandler;
+import org.apache.flink.runtime.scheduler.adaptive.failure.Failure;
+import org.apache.flink.runtime.scheduler.exceptionhistory.RootExceptionHistoryEntry;
 import org.apache.flink.util.Preconditions;
 
 import org.slf4j.Logger;
@@ -30,6 +33,8 @@ import org.slf4j.Logger;
 import javax.annotation.Nullable;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ScheduledFuture;
 
 /** State which describes a job which is currently being restarted. */
@@ -38,6 +43,8 @@ class Restarting extends StateWithExecutionGraph {
     private final Context context;
 
     private final Duration backoffTime;
+
+    private final List<Failure> failureCollection;
 
     @Nullable private ScheduledFuture<?> goToWaitingForResourcesFuture;
 
@@ -48,7 +55,8 @@ class Restarting extends StateWithExecutionGraph {
             OperatorCoordinatorHandler operatorCoordinatorHandler,
             Logger logger,
             Duration backoffTime,
-            ClassLoader userCodeClassLoader) {
+            ClassLoader userCodeClassLoader,
+            List<Failure> failureCollection) {
         super(
                 context,
                 executionGraph,
@@ -58,6 +66,7 @@ class Restarting extends StateWithExecutionGraph {
                 userCodeClassLoader);
         this.context = context;
         this.backoffTime = backoffTime;
+        this.failureCollection = failureCollection;
 
         getExecutionGraph().cancel();
     }
@@ -82,23 +91,35 @@ class Restarting extends StateWithExecutionGraph {
                 getExecutionGraph(), getExecutionGraphHandler(), getOperatorCoordinatorHandler());
     }
 
+    private void handleFailure(Failure failure) {
+        failureCollection.add(failure);
+    }
+
     @Override
     public void handleGlobalFailure(Throwable cause) {
-        getLogger()
-                .debug(
-                        "Ignored global failure because we are already restarting the job {}.",
-                        getJobId(),
-                        cause);
+        handleFailure(Failure.createGlobal(cause));
     }
 
     @Override
     boolean updateTaskExecutionState(TaskExecutionStateTransition taskExecutionStateTransition) {
-        maybeArchiveExecutionFailure(taskExecutionStateTransition);
-        return getExecutionGraph().updateState(taskExecutionStateTransition);
+        final boolean successfulUpdate =
+                getExecutionGraph().updateState(taskExecutionStateTransition);
+
+        if (successfulUpdate
+                && taskExecutionStateTransition.getExecutionState() == ExecutionState.FAILED) {
+            handleFailure(
+                    Failure.createLocal(
+                            extractError(taskExecutionStateTransition),
+                            extractExecutionVertexID(taskExecutionStateTransition)));
+        }
+        return successfulUpdate;
     }
 
     @Override
     void onGloballyTerminalState(JobStatus globallyTerminalState) {
+        Optional<RootExceptionHistoryEntry> entry =
+                convertFailures(getExecutionGraph()::getExecutionVertex, failureCollection);
+        entry.ifPresent(context::archiveFailure);
         Preconditions.checkArgument(globallyTerminalState == JobStatus.CANCELED);
         goToWaitingForResourcesFuture =
                 context.runIfState(this, context::goToWaitingForResources, backoffTime);
@@ -120,6 +141,9 @@ class Restarting extends StateWithExecutionGraph {
                 ExecutionGraph executionGraph,
                 ExecutionGraphHandler executionGraphHandler,
                 OperatorCoordinatorHandler operatorCoordinatorHandler);
+
+        /** Archive collection of failures. */
+        void archiveFailure(RootExceptionHistoryEntry failure);
 
         /** Transitions into the {@link WaitingForResources} state. */
         void goToWaitingForResources();
@@ -146,6 +170,7 @@ class Restarting extends StateWithExecutionGraph {
         private final OperatorCoordinatorHandler operatorCoordinatorHandler;
         private final Duration backoffTime;
         private final ClassLoader userCodeClassLoader;
+        private final List<Failure> failureCollection;
 
         public Factory(
                 Context context,
@@ -154,7 +179,8 @@ class Restarting extends StateWithExecutionGraph {
                 OperatorCoordinatorHandler operatorCoordinatorHandler,
                 Logger log,
                 Duration backoffTime,
-                ClassLoader userCodeClassLoader) {
+                ClassLoader userCodeClassLoader,
+                List<Failure> failureCollection) {
             this.context = context;
             this.log = log;
             this.executionGraph = executionGraph;
@@ -162,6 +188,7 @@ class Restarting extends StateWithExecutionGraph {
             this.operatorCoordinatorHandler = operatorCoordinatorHandler;
             this.backoffTime = backoffTime;
             this.userCodeClassLoader = userCodeClassLoader;
+            this.failureCollection = failureCollection;
         }
 
         public Class<Restarting> getStateClass() {
@@ -176,7 +203,8 @@ class Restarting extends StateWithExecutionGraph {
                     operatorCoordinatorHandler,
                     log,
                     backoffTime,
-                    userCodeClassLoader);
+                    userCodeClassLoader,
+                    failureCollection);
         }
     }
 }

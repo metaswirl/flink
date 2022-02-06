@@ -18,33 +18,38 @@
 
 package org.apache.flink.runtime.scheduler.adaptive.failure;
 
-import org.apache.flink.runtime.executiongraph.Execution;
-import org.apache.flink.runtime.scheduler.exceptionhistory.FailureHandlingResultSnapshot;
+import org.apache.flink.runtime.executiongraph.ExecutionVertex;
+import org.apache.flink.runtime.scheduler.exceptionhistory.ExceptionHistoryEntry;
+import org.apache.flink.runtime.scheduler.exceptionhistory.RootExceptionHistoryEntry;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 
-/**
- * Represents a local failure, i.e., a failure limited to a part of the ExecutionGraph. However,
- * this one does not have any information on the failure location.
- */
-public class LocalFailureWithoutExecutionVertexId extends Failure {
-    public LocalFailureWithoutExecutionVertexId(Throwable cause) {
+/** Represents a local failure, i.e., a failure limited to a part of the ExecutionGraph. */
+public class LocalFailureWithoutExecutionVertexID extends Failure {
+    public LocalFailureWithoutExecutionVertexID(Throwable cause) {
         super(cause);
     }
 
     @Override
     public Failure replaceCause(Throwable cause) {
-        return new LocalFailureWithoutExecutionVertexId(cause);
+        return new LocalFailureWithoutExecutionVertexID(cause);
     }
 
     @Override
-    public FailureHandlingResultSnapshot createFailureHandlingResultSnapshot(
-            Set<ExecutionVertexID> concurrentVertexIds,
-            long timestamp,
-            Function<ExecutionVertexID, Execution> latestExecutionLookup) {
-        return FailureHandlingResultSnapshot.create(
-                getCause(), concurrentVertexIds, timestamp, latestExecutionLookup);
+    public ExceptionHistoryEntry toExceptionHistoryEntry(
+            Function<ExecutionVertexID, Optional<ExecutionVertex>> lookup) {
+        return new ExceptionHistoryEntry(getCause(), getTimestamp(), null, null);
+    }
+
+    @Override
+    public RootExceptionHistoryEntry toRootExceptionHistoryEntry(
+            Function<ExecutionVertexID, Optional<ExecutionVertex>> lookup,
+            Set<ExceptionHistoryEntry> concurrentEntries) {
+
+        return new RootExceptionHistoryEntry(
+                getCause(), getTimestamp(), null, null, concurrentEntries);
     }
 }

@@ -29,6 +29,7 @@ import org.apache.flink.util.Preconditions;
 import javax.annotation.Nullable;
 
 import java.util.Collections;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
@@ -139,6 +140,7 @@ public class FailureHandlingResultSnapshot {
                 concurrentVertexIds.stream()
                         .filter(executionVertexId -> !executionVertexId.equals(failureOrigin))
                         .map(latestExecutionLookup)
+                        .filter(Objects::nonNull)
                         .filter(execution -> execution.getFailureInfo().isPresent())
                         .collect(Collectors.toSet());
 

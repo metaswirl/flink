@@ -32,12 +32,7 @@ import org.apache.flink.runtime.executiongraph.TaskExecutionStateTransition;
 import org.apache.flink.runtime.scheduler.ExecutionGraphHandler;
 import org.apache.flink.runtime.scheduler.OperatorCoordinatorHandler;
 import org.apache.flink.runtime.scheduler.adaptive.failure.Failure;
-import org.apache.flink.runtime.scheduler.adaptive.failure.GlobalFailure;
-import org.apache.flink.runtime.scheduler.adaptive.failure.LocalFailure;
-import org.apache.flink.runtime.scheduler.adaptive.failure.LocalFailureWithoutExecutionVertexId;
 import org.apache.flink.runtime.scheduler.stopwithsavepoint.StopWithSavepointTerminationManager;
-import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
-import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.Preconditions;
 
 import org.slf4j.Logger;
@@ -45,6 +40,8 @@ import org.slf4j.Logger;
 import javax.annotation.Nullable;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
 
@@ -52,6 +49,8 @@ import java.util.concurrent.ScheduledFuture;
 class Executing extends StateWithExecutionGraph implements ResourceConsumer {
 
     private final Context context;
+
+    private final List<Failure> failureCollection;
 
     Executing(
             ExecutionGraph executionGraph,
@@ -75,6 +74,8 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
 
         // check if new resources have come available in the meantime
         context.runIfState(this, this::notifyNewResourcesAvailable, Duration.ZERO);
+
+        this.failureCollection = new ArrayList<>();
     }
 
     @Override
@@ -88,9 +89,15 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
                 getExecutionGraph(), getExecutionGraphHandler(), getOperatorCoordinatorHandler());
     }
 
+    private void handleFailure(Failure failure) {
+        failureCollection.add(failure);
+        FailureResult failureResult = context.howToHandleFailure(failure);
+        transitionOnFailure(failureResult);
+    }
+
     @Override
     public void handleGlobalFailure(Throwable cause) {
-        handleAnyFailure(new GlobalFailure(cause));
+        handleFailure(Failure.createGlobal(cause));
     }
 
     @Override
@@ -98,49 +105,35 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
         final boolean successfulUpdate =
                 getExecutionGraph().updateState(taskExecutionStateTransition);
 
-        if (successfulUpdate) {
-            if (taskExecutionStateTransition.getExecutionState() == ExecutionState.FAILED) {
-                Throwable cause = extractError(taskExecutionStateTransition);
-                ExecutionVertexID id = getExecutionVertexId(taskExecutionStateTransition.getID());
-                Failure failure =
-                        id != null
-                                ? new LocalFailure(id, cause)
-                                : new LocalFailureWithoutExecutionVertexId(cause);
-                handleAnyFailure(failure);
-            }
+        if (successfulUpdate
+                && taskExecutionStateTransition.getExecutionState() == ExecutionState.FAILED) {
+            handleFailure(
+                    Failure.createLocal(
+                            extractError(taskExecutionStateTransition),
+                            extractExecutionVertexID(taskExecutionStateTransition)));
         }
 
         return successfulUpdate;
     }
 
-    private void handleAnyFailure(Failure failure) {
-        final FailureResult failureResult = context.howToHandleFailure(failure);
-
-        archiveExecutionFailure(failure);
-
+    private void transitionOnFailure(FailureResult failureResult) {
         if (failureResult.canRestart()) {
             getLogger().info("Restarting job.", failureResult.getFailureCause());
             context.goToRestarting(
                     getExecutionGraph(),
                     getExecutionGraphHandler(),
                     getOperatorCoordinatorHandler(),
-                    failureResult.getBackoffTime());
+                    failureResult.getBackoffTime(),
+                    failureCollection);
         } else {
             getLogger().info("Failing job.", failureResult.getFailureCause());
             context.goToFailing(
                     getExecutionGraph(),
                     getExecutionGraphHandler(),
                     getOperatorCoordinatorHandler(),
-                    failureResult.getFailureCause());
+                    failureResult.getFailureCause(),
+                    failureCollection);
         }
-    }
-
-    private Throwable extractError(TaskExecutionStateTransition taskExecutionStateTransition) {
-        Throwable cause = taskExecutionStateTransition.getError(userCodeClassLoader);
-        if (cause == null) {
-            cause = new FlinkException("Unknown failure cause. Probably related to FLINK-21376.");
-        }
-        return cause;
     }
 
     @Override
@@ -180,7 +173,8 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
                     getExecutionGraph(),
                     getExecutionGraphHandler(),
                     getOperatorCoordinatorHandler(),
-                    Duration.ofMillis(0L));
+                    Duration.ofMillis(0L),
+                    failureCollection);
         }
     }
 
@@ -262,7 +256,8 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
                 ExecutionGraph executionGraph,
                 ExecutionGraphHandler executionGraphHandler,
                 OperatorCoordinatorHandler operatorCoordinatorHandler,
-                Duration backoffTime);
+                Duration backoffTime,
+                List<Failure> failureCollection);
 
         /**
          * Transitions into the {@link Failing} state.
@@ -277,7 +272,8 @@ class Executing extends StateWithExecutionGraph implements ResourceConsumer {
                 ExecutionGraph executionGraph,
                 ExecutionGraphHandler executionGraphHandler,
                 OperatorCoordinatorHandler operatorCoordinatorHandler,
-                Throwable failureCause);
+                Throwable failureCause,
+                List<Failure> failureCollection);
 
         /**
          * Transitions into the {@link StopWithSavepoint} state.
