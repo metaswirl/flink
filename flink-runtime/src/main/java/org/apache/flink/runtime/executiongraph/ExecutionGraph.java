@@ -39,6 +39,7 @@ import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.tasks.CheckpointCoordinatorConfiguration;
 import org.apache.flink.runtime.query.KvStateLocationRegistry;
 import org.apache.flink.runtime.scheduler.InternalFailuresListener;
+import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.scheduler.strategy.SchedulingTopology;
 import org.apache.flink.runtime.state.CheckpointStorage;
 import org.apache.flink.runtime.state.StateBackend;
@@ -49,6 +50,7 @@ import javax.annotation.Nullable;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -228,4 +230,8 @@ public interface ExecutionGraph extends AccessExecutionGraph {
      * @param vertices The execution job vertices that are newly initialized.
      */
     void notifyNewlyInitializedJobVertices(List<ExecutionJobVertex> vertices);
+
+    Optional<ExecutionVertex> getExecutionVertex(final ExecutionVertexID executionVertexId);
+
+    Optional<ExecutionVertexID> getExecutionVertexId(ExecutionAttemptID id);
 }
