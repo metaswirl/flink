@@ -78,7 +78,7 @@ public class ExceptionHistoryEntry extends ErrorInfo {
      * @throws IllegalArgumentException if the passed {@code timestamp} is not bigger than {@code
      *     0}.
      */
-    protected ExceptionHistoryEntry(
+    public ExceptionHistoryEntry(
             Throwable cause,
             long timestamp,
             @Nullable String failingTaskName,
